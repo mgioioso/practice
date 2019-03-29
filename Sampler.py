@@ -1,6 +1,85 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import math
+from scipy import stats
+
+####### HELPER CLASSES ########
+# gamma prior on lambda
+class LambdaPrior:
+    def __init__(self, alpha, beta):
+        self.fn = stats.gamma(alpha, loc = 0, scale = 1)
+        self.alpha = alpha
+        self.beta = beta
+        self.proposeDistr = stats.norm # initialize
+
+    # Generate candidate lambda using proposal distribution around last good lambda
+    def sample(self, lastLambda, proposeStdDev):
+        return lastLambda + self.proposeDistr.rvs(loc=0, scale=proposeStdDev)
+
+    def logpdf(self, x):
+        return self.fn.logpdf(x)
+
+    def mean(self):
+        return self.fn.mean()
+
+# Exponential to model cumulative rainfall
+class ExpModel:
+    def __init__(self, data):
+        self.fn = stats.expon
+        self.data = data
+
+    def likelihood(self, candidateLambda):
+        return self.fn.logpdf(self.data, scale=1.0 / candidateLambda).sum()
+
+# Data structure that holds the posterior distribution
+class Posterior:
+    def __init__(self, nIts):
+        self.postr = pd.DataFrame({'posterior': np.zeros(nIts),
+                                   'lambda': np.zeros(nIts),
+                                   'prior': np.zeros(nIts),
+                                   'likelihood': np.zeros(nIts)})
+
+        self.nAccepts = 0
+
+    # Append candidate lambda to posterior if posterior probability is high enough
+    def append(self, i, candidateLambda, prior, likelihood):
+        posterior = prior + likelihood
+
+        if i == 0:
+            self.postr.iloc[i] = {'posterior': posterior,
+                                  'lambda': candidateLambda,
+                                  'prior': prior,
+                                  'likelihood': likelihood}
+        else:
+            ratio = posterior - self.postr.iloc[i - 1]['posterior']
+            r = math.log(np.random.rand())
+            if r < ratio:
+                self.postr.iloc[i] = {'posterior': posterior,
+                                      'lambda': candidateLambda,
+                                      'prior': prior,
+                                      'likelihood': likelihood}
+                self.nAccepts += 1
+            else:
+                self.postr.iloc[i] = self.postr.iloc[i - 1]
+
+    def getLambda(self, i):
+        return self.postr.iloc[i]['lambda']
+
+# Make proposal distribution narrower or wider depending on acceptance rate
+class AdaptableProposalStdDev:
+    def __init__(self, initialStdDev, batchSize):
+        self.stdDev = initialStdDev
+        self.batchSize = batchSize
+        self.acceptRate = []
+        self.targetAcceptRate = 0.44 # in 1 dimension
+
+    def adapt(self, nAccepts, i):
+        self.acceptRate.append(nAccepts/self.batchSize)
+        deltaSign = 1 if (self.acceptRate[-1]) > self.targetAcceptRate else -1
+        delta = math.exp(deltaSign * math.pow(i, -0.5))
+        #print(f'Proposal Std: before: {proposeStdDev}, after: {proposeStdDev*delta}')
+        self.stdDev *= delta
 
 def getAndCleanPrecip():
     r = np.random.randn()
